@@ -16,7 +16,7 @@ STATS_FILE = "stats.json"
 def load_json(file, default):
     if not os.path.exists(file):
         return default
-    with open(file) as f:
+    with open(file, "r") as f:
         return json.load(f)
 
 def save_json(file, data):
@@ -43,11 +43,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
-# ================= USERS COUNT =================
+# ================= USERS =================
 async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    await update.message.reply_text(f"👥 Total users: {len(STATS['users'])}")
+    await update.message.reply_text(f"👥 Total Users: {len(STATS['users'])}")
 
 # ================= BROADCAST =================
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -62,7 +62,7 @@ async def bulkadd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_state[update.effective_user.id] = {"mode": "bulk"}
     await update.message.reply_text(
-        "Paste bulk questions\n"
+        "Paste bulk questions:\n"
         "First line: Class | Chapter\n\n"
         "Q:\nA)\nB)\nC)\nD)\nANS:"
     )
@@ -86,7 +86,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
         del user_state[uid]
-        return await update.message.reply_text(f"✅ Message sent to {sent} users")
+        return await update.message.reply_text(f"✅ Sent to {sent} users")
 
     # ---------- BULK ADD ----------
     if st.get("mode") == "bulk":
@@ -96,7 +96,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         i = 1
         count = 0
-        while i < len(lines):
+        while i + 5 < len(lines):
             if lines[i].startswith("Q:"):
                 q = lines[i][2:].strip()
                 opts = [
@@ -120,33 +120,35 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del user_state[uid]
         return await update.message.reply_text(f"✅ {count} questions added")
 
-    # ---------- REPORT AFTER EXAM ----------
+    # ---------- REPORT ----------
     if st.get("reporting") is not None:
         idx = st["reporting"]
         qdata = st["qs"][idx]
-
         msg = (
             "🚨 Question Report\n\n"
-            f"User ID: {uid}\n"
+            f"User: {uid}\n"
             f"Class: {st['class']}\n"
             f"Chapter: {st['chapter']}\n\n"
-            f"Question:\n{qdata['q']}\n\n"
+            f"Q: {qdata['q']}\n\n"
             f"Reason:\n{text}"
         )
         await context.bot.send_message(ADMIN_ID, msg)
         st["reporting"] = None
-        return await update.message.reply_text("✅ Report sent to admin")
+        return await update.message.reply_text("✅ Report sent")
 
 # ================= QUIZ FLOW =================
 async def class_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q = update.callback_query
+    await q.answer()
     user_state[q.from_user.id] = {"class": q.data.split("_")[1]}
+
     kb = [[InlineKeyboardButton(c, callback_data=f"ch_{c}")]
           for c in QUESTIONS[user_state[q.from_user.id]["class"]]]
     await q.edit_message_text("Select Chapter:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def chapter_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q = update.callback_query
+    await q.answer()
     uid = q.from_user.id
     ch = q.data.replace("ch_","")
     cls = user_state[uid]["class"]
@@ -160,31 +162,30 @@ async def chapter_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
             btns.append([InlineKeyboardButton(f"{n} Questions", callback_data=f"qcount_{n}")])
 
     await q.edit_message_text(
-        f"📘 {ch}\nTotal questions: {total}\nSelect number:",
+        f"{ch}\nTotal Questions: {total}\nSelect:",
         reply_markup=InlineKeyboardMarkup(btns)
     )
 
 async def qcount_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    uid = q.from_user.id
-    user_state[uid]["q_limit"] = int(q.data.replace("qcount_",""))
+    q = update.callback_query
+    await q.answer()
+    user_state[q.from_user.id]["q_limit"] = int(q.data.replace("qcount_",""))
     await q.edit_message_text(
-        "▶️ Start test?",
+        "▶️ Start Test?",
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("Start", callback_data="start_test")]]
         )
     )
 
 async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q = update.callback_query
+    await q.answer()
     uid = q.from_user.id
-    cls = user_state[uid]["class"]
-    ch = user_state[uid]["chapter"]
-    limit = user_state[uid]["q_limit"]
+    st = user_state[uid]
 
-    all_qs = QUESTIONS[cls][ch]
-    user_state[uid].update({
-        "qs": random.sample(all_qs, limit),
+    all_qs = QUESTIONS[st["class"]][st["chapter"]]
+    st.update({
+        "qs": random.sample(all_qs, st["q_limit"]),
         "qno": 0,
         "score": 0,
         "answers": []
@@ -203,7 +204,8 @@ async def send_q(q, uid):
     await q.edit_message_text(cur["q"], reply_markup=InlineKeyboardMarkup(kb))
 
 async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q = update.callback_query
+    await q.answer()
     uid = q.from_user.id
     st = user_state[uid]
 
@@ -215,7 +217,7 @@ async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     st["qno"] += 1
     await send_q(q, uid)
 
-# ================= ANSWER REVIEW =================
+# ================= REVIEW =================
 async def show_review(q, uid):
     st = user_state[uid]
     i = st["review_index"]
@@ -229,8 +231,8 @@ async def show_review(q, uid):
 
     text = (
         f"Q{i+1}. {qdata['q']}\n\n"
-        f"Your answer: {qdata['options'][ua]} {'✅' if ua==ca else '❌'}\n"
-        f"Correct answer: {qdata['options'][ca]} ✅"
+        f"Your Answer: {qdata['options'][ua]} {'✅' if ua==ca else '❌'}\n"
+        f"Correct Answer: {qdata['options'][ca]} ✅"
     )
 
     kb = [
@@ -240,17 +242,18 @@ async def show_review(q, uid):
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
 
 async def review_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q = update.callback_query
+    await q.answer()
     uid = q.from_user.id
     user_state[uid]["review_index"] += 1
     await show_review(q, uid)
 
 async def report_after_exam(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q = update.callback_query
+    await q.answer()
     uid = q.from_user.id
-    idx = int(q.data.replace("report_",""))
-    user_state[uid]["reporting"] = idx
-    await q.message.reply_text("✍️ Type the issue with this question:")
+    user_state[uid]["reporting"] = int(q.data.replace("report_",""))
+    await q.message.reply_text("Type the issue:")
 
 # ================= LEADERBOARD =================
 async def show_leaderboard(q, uid):
@@ -268,7 +271,7 @@ async def show_leaderboard(q, uid):
     board = "\n".join([f"{i+1}. {v['score']}" for i,v in enumerate(scores[:5])])
 
     await q.edit_message_text(
-        f"🏁 Test Completed\n\n"
+        f"🏁 Exam Finished\n\n"
         f"Score: {st['score']}\n"
         f"Students: {len(scores)}\n"
         f"Your Rank: {rank}\n\n"
@@ -294,7 +297,7 @@ def main():
     app.add_handler(CallbackQueryHandler(review_next, pattern="^review_next$"))
     app.add_handler(CallbackQueryHandler(report_after_exam, pattern="^report_"))
 
-    print("✅ Bot running...")
+    print("Bot running...")
     app.run_polling()
 
 if __name__ == "__main__":
