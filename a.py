@@ -1,303 +1,178 @@
-import json, random, os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import logging
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes
 )
 
 # ================= CONFIG =================
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_ID = int(os.environ.get("ADMIN_ID"))
-QUESTIONS_FILE = "questions.json"
-STATS_FILE = "stats.json"
-# =========================================
+BOT_TOKEN = "PASTE_YOUR_BOT_TOKEN_HERE"
+ADMIN_ID = 123456789   # ← your Telegram numeric ID
+# ==========================================
 
-# ---------- LOAD / SAVE ----------
-def load_json(file, default):
-    if not os.path.exists(file):
-        return default
-    with open(file, "r") as f:
-        return json.load(f)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 
-def save_json(file, data):
-    with open(file, "w") as f:
-        json.dump(data, f, indent=4)
+# ================= DATA =================
+QUESTIONS = [
+    {
+        "q": "Human heart has how many chambers?",
+        "options": ["2", "3", "4", "5"],
+        "answer": 2,
+        "explanation": "Human heart has 4 chambers"
+    },
+    {
+        "q": "Unit of heredity is?",
+        "options": ["Cell", "Chromosome", "Gene", "DNA"],
+        "answer": 2,
+        "explanation": "Gene is the unit of heredity"
+    },
+    {
+        "q": "Which hormone regulates blood sugar?",
+        "options": ["Adrenaline", "Insulin", "Thyroxine", "Estrogen"],
+        "answer": 1,
+        "explanation": "Insulin regulates blood glucose level"
+    }
+]
 
-QUESTIONS = load_json(QUESTIONS_FILE, {"11": {}, "12": {}})
-STATS = load_json(STATS_FILE, {"users": [], "attempts": {}})
-user_state = {}
+user_state = {}     # {user_id: {"qno":0,"score":0}}
+leaderboard = {}   # {user_id: score}
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if uid not in STATS["users"]:
-        STATS["users"].append(uid)
-        save_json(STATS_FILE, STATS)
-
-    kb = [
-        [InlineKeyboardButton("Class 11 Biology", callback_data="class_11")],
-        [InlineKeyboardButton("Class 12 Biology", callback_data="class_12")]
-    ]
     await update.message.reply_text(
-        "🧬 NEET Biology Quiz Bot",
-        reply_markup=InlineKeyboardMarkup(kb)
+        "🧠 *NEET Quiz Bot*\n\n"
+        "/quiz – Start quiz\n"
+        "/score – Your score\n"
+        "/leaderboard – Top scores",
+        parse_mode="Markdown"
     )
 
-# ================= USERS =================
-async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    await update.message.reply_text(f"👥 Total Users: {len(STATS['users'])}")
+# ================= QUIZ START =================
+async def quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    user_state[uid] = {"qno": 0, "score": 0}
+    await send_question(update, context)
 
-# ================= BROADCAST =================
+# ================= SEND QUESTION =================
+async def send_question(update, context):
+    uid = update.effective_user.id
+    qno = user_state[uid]["qno"]
+
+    if qno >= len(QUESTIONS):
+        score = user_state[uid]["score"]
+        leaderboard[uid] = score
+
+        await update.effective_message.reply_text(
+            f"✅ *Quiz Completed*\n\n"
+            f"🎯 Score: *{score}*\n\n"
+            f"/leaderboard",
+            parse_mode="Markdown"
+        )
+        return
+
+    q = QUESTIONS[qno]
+    buttons = []
+
+    for i, opt in enumerate(q["options"]):
+        buttons.append(
+            [InlineKeyboardButton(opt, callback_data=str(i))]
+        )
+
+    await update.effective_message.reply_text(
+        f"Q{qno+1}. {q['q']}",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+# ================= ANSWER HANDLER =================
+async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    uid = query.from_user.id
+    selected = int(query.data)
+
+    qno = user_state[uid]["qno"]
+    correct = QUESTIONS[qno]["answer"]
+
+    if selected == correct:
+        user_state[uid]["score"] += 4
+        reply = "✅ Correct  (+4)"
+    else:
+        user_state[uid]["score"] -= 1
+        reply = (
+            "❌ Wrong  (-1)\n"
+            f"✔ Correct answer: {QUESTIONS[qno]['options'][correct]}"
+        )
+
+    user_state[uid]["qno"] += 1
+
+    await query.edit_message_text(
+        reply + "\n\n📘 " + QUESTIONS[qno]["explanation"]
+    )
+
+    await send_question(query, context)
+
+# ================= SCORE =================
+async def score(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    sc = user_state.get(uid, {}).get("score", 0)
+    await update.message.reply_text(f"🎯 Your Score: {sc}")
+
+# ================= LEADERBOARD =================
+async def leaderboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not leaderboard:
+        await update.message.reply_text("No attempts yet")
+        return
+
+    text = "🏆 *Leaderboard*\n\n"
+    sorted_lb = sorted(leaderboard.items(), key=lambda x: x[1], reverse=True)
+
+    for i, (uid, sc) in enumerate(sorted_lb[:10], start=1):
+        text += f"{i}. User {uid} — {sc}\n"
+
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# ================= BROADCAST (ADMIN) =================
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    user_state[update.effective_user.id] = {"mode": "broadcast"}
-    await update.message.reply_text("📢 Send message to broadcast:")
 
-# ================= BULK ADD =================
-async def bulkadd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    user_state[update.effective_user.id] = {"mode": "bulk"}
-    await update.message.reply_text(
-        "Paste bulk questions:\n"
-        "First line: Class | Chapter\n\n"
-        "Q:\nA)\nB)\nC)\nD)\nANS:"
-    )
-
-# ================= TEXT ROUTER =================
-async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if uid not in user_state:
+    msg = " ".join(context.args)
+    if not msg:
+        await update.message.reply_text("Usage: /broadcast message")
         return
 
-    st = user_state[uid]
-    text = update.message.text.strip()
+    sent = 0
+    for uid in user_state:
+        try:
+            await context.bot.send_message(uid, msg)
+            sent += 1
+        except:
+            pass
 
-    # ---------- BROADCAST ----------
-    if st.get("mode") == "broadcast":
-        sent = 0
-        for u in STATS["users"]:
-            try:
-                await context.bot.send_message(u, text)
-                sent += 1
-            except:
-                pass
-        del user_state[uid]
-        return await update.message.reply_text(f"✅ Sent to {sent} users")
-
-    # ---------- BULK ADD ----------
-    if st.get("mode") == "bulk":
-        lines = text.splitlines()
-        cls, chapter = [x.strip() for x in lines[0].split("|")]
-        QUESTIONS.setdefault(cls, {}).setdefault(chapter, [])
-
-        i = 1
-        count = 0
-        while i + 5 < len(lines):
-            if lines[i].startswith("Q:"):
-                q = lines[i][2:].strip()
-                opts = [
-                    lines[i+1][3:].strip(),
-                    lines[i+2][3:].strip(),
-                    lines[i+3][3:].strip(),
-                    lines[i+4][3:].strip()
-                ]
-                ans = {"A":0,"B":1,"C":2,"D":3}[lines[i+5].split(":")[1].strip()]
-                QUESTIONS[cls][chapter].append({
-                    "q": q,
-                    "options": opts,
-                    "answer": ans
-                })
-                count += 1
-                i += 6
-            else:
-                i += 1
-
-        save_json(QUESTIONS_FILE, QUESTIONS)
-        del user_state[uid]
-        return await update.message.reply_text(f"✅ {count} questions added")
-
-    # ---------- REPORT ----------
-    if st.get("reporting") is not None:
-        idx = st["reporting"]
-        qdata = st["qs"][idx]
-        msg = (
-            "🚨 Question Report\n\n"
-            f"User: {uid}\n"
-            f"Class: {st['class']}\n"
-            f"Chapter: {st['chapter']}\n\n"
-            f"Q: {qdata['q']}\n\n"
-            f"Reason:\n{text}"
-        )
-        await context.bot.send_message(ADMIN_ID, msg)
-        st["reporting"] = None
-        return await update.message.reply_text("✅ Report sent")
-
-# ================= QUIZ FLOW =================
-async def class_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    user_state[q.from_user.id] = {"class": q.data.split("_")[1]}
-
-    kb = [[InlineKeyboardButton(c, callback_data=f"ch_{c}")]
-          for c in QUESTIONS[user_state[q.from_user.id]["class"]]]
-    await q.edit_message_text("Select Chapter:", reply_markup=InlineKeyboardMarkup(kb))
-
-async def chapter_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
-    ch = q.data.replace("ch_","")
-    cls = user_state[uid]["class"]
-
-    total = len(QUESTIONS[cls][ch])
-    user_state[uid]["chapter"] = ch
-
-    btns = []
-    for n in [10,20,30,40,50]:
-        if n <= total:
-            btns.append([InlineKeyboardButton(f"{n} Questions", callback_data=f"qcount_{n}")])
-
-    await q.edit_message_text(
-        f"{ch}\nTotal Questions: {total}\nSelect:",
-        reply_markup=InlineKeyboardMarkup(btns)
-    )
-
-async def qcount_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    user_state[q.from_user.id]["q_limit"] = int(q.data.replace("qcount_",""))
-    await q.edit_message_text(
-        "▶️ Start Test?",
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Start", callback_data="start_test")]]
-        )
-    )
-
-async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
-    st = user_state[uid]
-
-    all_qs = QUESTIONS[st["class"]][st["chapter"]]
-    st.update({
-        "qs": random.sample(all_qs, st["q_limit"]),
-        "qno": 0,
-        "score": 0,
-        "answers": []
-    })
-    await send_q(q, uid)
-
-async def send_q(q, uid):
-    st = user_state[uid]
-    if st["qno"] >= len(st["qs"]):
-        st["review_index"] = 0
-        return await show_review(q, uid)
-
-    cur = st["qs"][st["qno"]]
-    kb = [[InlineKeyboardButton(o, callback_data=f"a_{i}")]
-          for i,o in enumerate(cur["options"])]
-    await q.edit_message_text(cur["q"], reply_markup=InlineKeyboardMarkup(kb))
-
-async def answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
-    st = user_state[uid]
-
-    selected = int(q.data.split("_")[1])
-    correct = st["qs"][st["qno"]]["answer"]
-
-    st["answers"].append(selected)
-    st["score"] += 4 if selected == correct else -1
-    st["qno"] += 1
-    await send_q(q, uid)
-
-# ================= REVIEW =================
-async def show_review(q, uid):
-    st = user_state[uid]
-    i = st["review_index"]
-
-    if i >= len(st["qs"]):
-        return await show_leaderboard(q, uid)
-
-    qdata = st["qs"][i]
-    ua = st["answers"][i]
-    ca = qdata["answer"]
-
-    text = (
-        f"Q{i+1}. {qdata['q']}\n\n"
-        f"Your Answer: {qdata['options'][ua]} {'✅' if ua==ca else '❌'}\n"
-        f"Correct Answer: {qdata['options'][ca]} ✅"
-    )
-
-    kb = [
-        [InlineKeyboardButton("🚩 Report", callback_data=f"report_{i}")],
-        [InlineKeyboardButton("Next ▶️", callback_data="review_next")]
-    ]
-    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
-
-async def review_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
-    user_state[uid]["review_index"] += 1
-    await show_review(q, uid)
-
-async def report_after_exam(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    uid = q.from_user.id
-    user_state[uid]["reporting"] = int(q.data.replace("report_",""))
-    await q.message.reply_text("Type the issue:")
-
-# ================= LEADERBOARD =================
-async def show_leaderboard(q, uid):
-    st = user_state[uid]
-    key = f"{st['class']}|{st['chapter']}"
-
-    STATS["attempts"].setdefault(key, []).append(
-        {"uid": uid, "score": st["score"]}
-    )
-    save_json(STATS_FILE, STATS)
-
-    scores = sorted(STATS["attempts"][key], key=lambda x: x["score"], reverse=True)
-    rank = next(i+1 for i,v in enumerate(scores) if v["uid"] == uid)
-
-    board = "\n".join([f"{i+1}. {v['score']}" for i,v in enumerate(scores[:5])])
-
-    await q.edit_message_text(
-        f"🏁 Exam Finished\n\n"
-        f"Score: {st['score']}\n"
-        f"Students: {len(scores)}\n"
-        f"Your Rank: {rank}\n\n"
-        f"🏆 Leaderboard\n{board}"
-    )
+    await update.message.reply_text(f"✅ Broadcast sent to {sent} users")
 
 # ================= MAIN =================
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("users", users))
-    app.add_handler(CommandHandler("bulkadd", bulkadd))
+    app.add_handler(CommandHandler("quiz", quiz))
+    app.add_handler(CommandHandler("score", score))
+    app.add_handler(CommandHandler("leaderboard", leaderboard_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CallbackQueryHandler(answer))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
-
-    app.add_handler(CallbackQueryHandler(class_select, pattern="^class_"))
-    app.add_handler(CallbackQueryHandler(chapter_select, pattern="^ch_"))
-    app.add_handler(CallbackQueryHandler(qcount_select, pattern="^qcount_"))
-    app.add_handler(CallbackQueryHandler(start_test, pattern="^start_test$"))
-    app.add_handler(CallbackQueryHandler(answer, pattern="^a_"))
-    app.add_handler(CallbackQueryHandler(review_next, pattern="^review_next$"))
-    app.add_handler(CallbackQueryHandler(report_after_exam, pattern="^report_"))
-
-    print("Bot running...")
+    print("✅ Bot running...")
     app.run_polling()
 
 if __name__ == "__main__":
